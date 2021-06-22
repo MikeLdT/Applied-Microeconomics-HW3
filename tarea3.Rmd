@@ -1,0 +1,693 @@
+---
+title: "Tarea 3 de Microeconometría Aplicada: RCTs"
+runningheader: "RCTs" # only for pdf output
+subtitle: "An implementation in R Markdown" # only for html output
+author: "Miguel Lerdo de Tejada Flores"
+date: "`r format(Sys.Date(),  '%A %d, %B %Y' )`"
+output:
+  tufte::tufte_handout:
+    citation_package: natbib
+    latex_engine: xelatex
+  tufte::tufte_html: default
+  tufte::tufte_book:
+    citation_package: natbib
+    latex_engine: xelatex
+bibliography: skeleton.bib
+link-citations: yes
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{adjustbox}
+  - \usepackage{placeins}
+---
+
+```{r setup, include=FALSE}
+library(tufte)
+# invalidate cache when the tufte version changes
+knitr::opts_chunk$set(cache.extra = packageVersion('tufte'),echo = F,warning = F,message = F)
+options(htmltools.dir.version = FALSE)
+options(na.action='na.pass')
+options(scipen = 999)
+
+```
+
+```{r libraries, include=F}
+library(haven)
+library(naniar)
+library(RCT)
+library(tidyverse)
+library(gamlr)
+library(parallel)
+library(knitr)
+library(fixest)
+library(tidyr)
+library(EnvStats)
+library(ggplot2)
+library(kableExtra)
+library(equatiomatic)
+library(latex2exp)
+```
+
+
+```{r datos}
+names <- data.frame(read_dta("Names.dta"))
+names[is.na(names)] <- 0
+names <- names %>% select(-expminreq)
+
+
+```
+
+`r newthought('Bertrand y Mullainathan (2004)')` estaban interesados en determinar el grado de discriminación racial que podía darse en el mercado laboral en Estados Unidos. Para esto utilizaron un experimento aleatorizado. Su experimento consistió en preparar CVs ficticios de diversa calidad. A cada CV se le asignaría de manera aleatoria un nombre. Los nombres utilizados en su experimento fueron nombres que se utilizan mayoritariamente entre afroamericanos (e.g. Tanisha y Hakeem) y otros que se utilizan mayoritariamente entre blancos (e.g. Allison y Todd). Los CVs fueron enviados como respuesta a distintos anuncios que fueron publicados en periódicos. La idea era ver la diferencia en llamadas para entrevista (__call\_back__) que podían recibir CVs con nombres afroamericanos versus CVs con nombres de blancos. 
+
+Para esta tarea utilizarás la base de datos __Names.dta__ que está disponible en __Canvas__. De igual manera, en __Canvas__ encontrarás la descripción de las variables de la base de datos en el archivo __nombres\_des.pdf__.
+
+ 
+  1. Por qué era importante para los autores aleatorizar los nombres? Es decir, ¿por qué los investigadores no recopilaron información de postulantes verdaderos a los trabajos y codificaron si los nombres de dichas aplicaciones están más asociados a afroamericanos o blancos? ¿Qué sesgo (positivo o negativo) crees que hubiera resultado de seguir esta estrategia? 
+  
+  En primer lugar para evitar una sobreestimación del efecto de la percepción de los nombres y controlar desde le diseño del experimento. Por ejemplo, los afroamericanos tienen mayor incidencia criminal en promedio por lo que una menor cantidad de llamadas podría ser el resultado de que los empleadores prefieren a candidatos con pocos o nulos problemas con la ley, o también las mujeres afroamericanas tienen mayor cantidad de hijos y los empleadores tienden a rechazar a candidatas mientras más probable sientan que les tendrán que dar ausencia por maternidad, por lo que se confundiría el efecto de la discriminación por género con el de la discriminación por raza.
+  
+  Además, podría haber un sesgo de selección donde en su mayoría se postulan los afroamericanos que de verdad creen que serán llamados de vuelta lo que reduciría el efecto de la discriminación en los datos.
+  
+```{=latex}
+\newpage
+```
+  
+  2. Utiliza la base de datos para dar evidencia que la asignación de nombres parece haber sido aleatoria. Deberás incluir la(s) tabla(s) relevante(s) que te haya(n) permitido llegar a esta conclusión.
+```{r 2 tabla de balance}
+#tunear con nueva columna
+
+#balance_table(select(names,-c(firstname,expminreq)),"black")
+tabla <- balance_table(select(names,-c(firstname,call_back)),"black")
+
+
+
+```  
+
+```{r,fig.pos='H'}
+regtab <- lm(data=names,black~ofjobs+ yearsexp + honors +  volunteer 
++ military + empholes + workinschool + email + computerskills + specialskills + college)
+a <- summary(regtab)$fstatistic[[1]]
+
+kable(tabla,"latex",digits=3) %>% 
+  kable_styling(latex_options = c("striped", "hold_position"),
+                full_width = F) %>%
+  footnote("En la especificación black vs Detailed information on resume") %>% 
+  footnote(c(paste0("El estadístico F correspodiente es: ",round(a,2))),general_title = "")
+
+#reportar prueba F
+```
+
+Hay evidencia de que la asignación sí fue aleatoria ya que la diferencia de medias    entre afroamericanos y blancos por casi cada variable es significativamente igual a cero. Para esta análisis se excluyeron las variables `firstname` y `expminreq`, la segunda ya que da información ya contenida en otras variables. Finalmente, el único valor p menor de la correspondiente _prueba t_ que 0.05 es el de la varialbe `computerskills`, por lo que al parecer la asignación no es balanceada para esa variable. Además, no hay significacia conjunta entre las variables del cv y la variable `black`, ya que dicha especifiación tiene un estadístico F muy pequeño.
+
+
+  3. La variable __black__ es una dummy creada por los investigadores para señalar si el nombre es usual de afroamericanos. Asumiendo que la distribución de nombres fue aleatoria, da evidencia de si existe discriminación racial en el __call\_back__ utilizando: (i) un estimador de Neyman, (ii) una estimación de OLS con errores heterocedásticos y (iii) una estimación de OLS con errores heterocedásticos y agregando controles (ustedes deberán decidir cuáles). 
+  
+
+```{r neyman}
+neyman <- mean(names[names$black==1,]$call_back-names[names$black==0,]$call_back)
+var_ney <- var(names[names$black==1,]$call_back)/sum(names$black==1)+var(names[names$black==0,]$call_back)/(dim(names)[1]-sum(names$black==1))
+
+ols_ney <- feols(call_back~black,data=names,se = "hetero")
+ols_ney$coeftable <- ols_ney$coeftable[-1,]
+ols_ney$cov.scaled <- NA
+ols_ney$cov.unscaled <- NA
+ols_ney$residuals <- NA
+ols_ney$hessian <- NA
+ols_ney$sq.cor <- NA
+ols_ney$scores <- NA
+ols_ney$ssr <- NA 
+
+```
+
+```{r ols}
+ols <- feols(call_back~black,data=names,se = "hetero")
+```
+  
+  
+```{r 3laaso,echo=F}
+#escogemos las variables con un lasso que mejor predicen y
+Xs <- names %>% select(-firstname,-call_back,-black) 
+
+Xs <- sparse.model.matrix(~.+0, data=Xs)
+
+Y <- names$call_back
+
+#detectCores()
+cl <- makeCluster(4)
+#cl
+
+lassoy <- gamlr(x=Xs,y=Y,cl=cl, family='binomial')
+
+stopCluster(cl)
+
+save(lassoy, file='lassoy.Rdata')
+
+#plot(lassoy)
+
+coefs <- coef(lassoy)
+vars_lasso <- data.frame(name = coefs@Dimnames[[1]][coefs@i + 1], coefficient = coefs@x)
+
+#escogemos las variables con un lasso que mejor predicen x
+Xs <- names %>% select(-firstname,-call_back,-black) 
+
+Xs <- sparse.model.matrix(~. + 0, data=Xs)
+
+Y <- names$black
+
+#detectCores()
+cl <- makeCluster(4)
+#cl
+
+lassox <- gamlr(x=Xs,y=Y,cl=cl, family='binomial')
+
+stopCluster(cl)
+
+save(lassox, file='lassoX.Rdata')
+
+#plot(lassox)
+
+coefs <- coef(lassox)
+vars_lasso2 <- data.frame(name = coefs@Dimnames[[1]][coefs@i + 1], coefficient = coefs@x)
+
+
+#e <- balance_regression(select(names,-c(firstname)),"black")$regression_table
+
+#cof_x <- e[e$p.value<0.05,]$term
+
+
+control <- union(vars_lasso2[[1]],vars_lasso[[1]])
+control <- control[-1]
+``` 
+
+
+      
+      
+```{r ols controles}
+formula <- "call_back ~ black "
+for(i in 1:length(control)){
+  formula <- paste0(formula,paste0("+",control[i]))
+}
+
+ols_control <- feols(data=names,as.formula(formula),se="hetero",)
+```
+- Indica la prueba de hipótesis que estarás contrastando en cada estimación.
+
+Para el caso de estadístico de __Neyman__, contrastaré la prueba:$$H_0:~\tau^{Neyman}=0~v.s.~H_a:~\tau^{Neyman}<0$$
+
+Mientras que para __OLS__, donde tengo la especificación $$call\_back_i=\beta_0+\beta_1black_i$$ contrastaré $$H_0:~\beta_1=0~v.s.\beta_1<0$$
+
+```{marginfigure,echo = TRUE}
+El LASSO para _call\_back_ selecciona 26 variables mientras que para _black_ selecciona únicamente una variable.
+```
+```{r marg, fig.margin=TRUE, fig.cap = "LASSO para callback"}
+plot(lassoy)
+
+```
+```{r marg2, fig.margin=TRUE, fig.cap = "LASSO para black"}
+plot(lassox)
+
+```
+
+Finalmente, para __OLS+controles__ controlaré únicamente por `computerskills`. Como se puede ver en la tabla de balance, es la única cuya diferencia de medias $computerskills_i^{black=1}-computerskills_i^{black=0}$ es significativa. La anterior intuición fue comprobada con un processo de _Double LASSO_ para escoger los controles adecuados. Como se detalla [aquí](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwif6Pyvm6DwAhUIKawKHU8-CLkQFjABegQIAxAD&url=https%3A%2F%2Fstuff.mit.edu%2F~vchern%2Fpapers%2FChernozhukov-Saloniki.pdf&usg=AOvVaw0_06oDrEslgRfgc9SYNNHU) y siguiendo a Urminsky, O. et. al. (2016)^[Urminsky, O., Hansen, C., & Chernozhukov, V. (2016). Using double-lasso regression for principled variable selection. Available at SSRN 2733374.
+], corro una regresión LASSO que selecciona las variables que mejor explican a `call_back`, luego un LASSO para encontrar las variables que mejor explican a `black` y de la intersección de ambas listas solo sobrevive `computerskills`. 
+
+Entonces la especificación es $$call\_back_i=\beta_0+\beta_1black_i+\beta_2computerskills_i$$
+con la correspondiente prueba de hipótesis $$H_0:~\beta_1=0~v.s.\beta_1<0$$
+
+      
+  - Reporta los resultados de tus 3 estimaciones con una tabla con el formato usual que hemos empleado en el semestre.
+```{r tablas, results = 'asis',fig.cap= "callback vs black"}
+etable(ols_ney,ols,ols_control,fitstat = ~n+r2+f, tex = T,
+       
+        subtitles = c("Neyman", "OLS", "OLS + control"), 
+                                                depvar = F)
+```
+    
+  - Asegúrate que los resultados reportados en cada columna sean comparables. Es decir, deberán estar reportados en las mismas unidades para poder hacer una comparación a lo largo de las columnas.
+
+  - Elige una de las columnas para llevar a cabo una interpretación del coeficiente relevante que estas estimando. Da evidencia como parte de esta interpretación de la importancia del efecto. Es decir, ¿consideras que es un efecto pequeño o grande? 
+    
+  El coeficiente de la columna 2, del método de _OLS_ nos dice que C.P. que un cv tenga nombre típico afroamericano está asociado con un decremento de `r -coef(ols)[2]` en la probabilidad de que reciba una llamada respecto a un cv sin nombre típico afroamericano. En términos de desviaciones estándar, representa `r neyman/sd(names$call_back)*100`\%.
+    
+     
+  4. Planteamos ahora una prueba de hipótesis que sugiere que a nivel individual no hay un efecto de la discriminación. Es decir, un individuo __i__ recibiría el mismo valor de la dummy __call\_back__ independientemente si es afroamericano o blanco: $$ H_0:~CB_{i,blanco}=CB_{i,afroam} $$ donde $CB_{i,x}$ es una dummy igual a uno si  el individuo __i__ de raza __x__  recibió una llamada para entrevista. Utiliza un __Fischer   Exact Test__ para evaluar esta hipótesis.         Emplea la media como estadístico para evaluar esta hipótesis. ¿Qué representa la media de las dummies? Reporta el __valor-p__ y la     conclusión a la que llegas.  
+```{r 4fisher}
+
+y_1 <- names$call_back[names$black == 1]
+y_0 <- names$call_back[names$black == 0]
+prueba <- twoSamplePermutationTestLocation(y_0, y_1, mu1.minus.mu2 = 0, 
+                                 alternative = "two.sided",
+                                 seed = 123)
+p_value <- prueba$p.value
+#prueba
+
+```
+
+```{r fisher2}
+taus <- sapply(1:900,function(x){
+  set.seed(x)
+  data <- names
+  data$black <- sample(data$black)
+  mean(data[data$black==1,]$call_back)-mean(data[data$black==0,]$call_back)
+  
+})
+
+pval <- (sum(taus>abs(neyman))+sum(-taus< -abs(neyman)))/length(taus)
+
+
+```
+
+El promedio de las dummies representa la probabilidad de que la dummy tome el valor de 1. Entonces representa la probabilidad de que a ese cv lo hayan llamado de vuelta.
+.
+Al simular la asignación del tratamiento (i.e. simular una nueva asignación de la variable `black`) y calcular la diferencia de medias entre tratamiento y control $\bar{\tau}^T_j-\bar{\tau}^C_j$ 900 veces, recordarno el valor observado del estadístico de Neyman es `r neyman` y calculando el p-value $$p-value\equiv{1\over900}\sum_{j=1}^{900}1\{|\bar{\tau}^T_j-\bar{\tau}^C_j|\geq|\tau^{Neyman}|\}$$ me da un valor de `r pval`. 
+
+```{r marg3, fig.margin=TRUE, fig.cap = "Simulación de asignaciones de black"}
+ggplot(data.frame(taus),aes(x=taus))+
+  geom_histogram(aes(y=..count../sum(..count..)), col="brown")+
+  labs(x="Diferencia de medias",y="Proporción")+
+  geom_vline(xintercept = neyman,col="red4")+
+    geom_label(mapping = aes(x=neyman+0.01,y=0.1,label=paste('Observado=',round(neyman,3))),col="red4")+
+    theme_minimal()
+```
+
+Igual al correr una prueba de diferencia de medias con la función __twoSamplePermutationTestLocation__, el pvalue también es `r p_value`. Entones podemos concluir que el tratamiento sí tiene un efecto i.e. que tener un nombre típico afroamericano sí impacta la probabilidad e que te llamen para un trabajo respecto a tener un nombre típico de blanco. 
+
+
+  
+  5. Imagina que estratificas por: (i) sexo del aplicante (hombre o mujer), (ii) ciudad donde se postula al trabajo (Chicago o Boston) e (iii) industria de la empresa que publico el puesto (ver el pdf que indica las industrias disponibles) [Ejemplo: un posible estrato sería hombres aplicantes a trabajos en Chicago en la industria manufacturera]. Empleando todas las combinaciones posibles de las variables (i)-(iii), utiliza el método de Neyman para calcular el efecto de discrminación en cada estrato (elige el formato que quieras para reportar este resultado, tabla o gráfica). Utilizando los efectos por estrato, calcula el efecto promedio de tratamiento. Compara este estimador promedio y la varianza con el resultado que obtuviste en la pregunta (3).
+```{r strata}
+names_strat <- names %>% 
+  group_by(black,female,chicago,manuf,transcom,bankreal,trade,busservice,othservice,missind) %>% 
+  summarise(mean=mean(call_back),n=n(),var=var(call_back),.groups="keep") %>%
+  mutate(var_mean=var/n) %>% 
+  #arrange(female,chicago,manuf,transcom,bankreal,trade,busservice,othservice,missind) %>% 
+  mutate(industry=ifelse(manuf==1,"manufacturing",
+                         ifelse(transcom==1,"transport/communication",
+                                ifelse(bankreal==1,"finance,insurance or real state",
+                                       ifelse(trade==1,"commerce",
+                                              ifelse(busservice==1,"bussiness and personal services",
+                                                     ifelse(othservice==1,"other services","unknown")))))),
+         city=ifelse(chicago,"chicago","boston"),sex=ifelse(female,"woman","man")) 
+
+names_strat <- names_strat %>% 
+  ungroup() %>% 
+  select(black,city,sex,industry,mean,var_mean,n) %>% 
+  pivot_wider(names_from=black, values_from=c(mean,var_mean,n),names_prefix="black") %>% 
+  rename_with(~ gsub("black1","black",.x,fixed=T)) %>%
+  rename_with(~ gsub("black0","white",.x,fixed=T)) %>% 
+  mutate(tau=mean_black-mean_white)
+
+ate_strat <- names_strat %>% 
+  mutate(treat=tau*(n_black+n_white)/(dim(names)[1])) %>% 
+  summarise(ate=sum(treat)) %>% 
+  pull()
+
+neyman_strat_var <- names_strat %>% 
+  mutate(var_mean_strat=(var_mean_black+var_mean_white)*((n_black+n_white)/dim(names)[1])^2) %>% 
+  summarise(var=sum(var_mean_strat)) %>% 
+  pull()
+  
+
+
+```
+El estimador, que es un promedio ponderado de las última columna de la tabla, toma el valor `r ate_strat` que es muy similar al de las preguntas anteriores, pero tiene una varianza estimada de `r neyman_strat_var` que es ligeramente menor. Recordemos que en la pregunta 3 obtuvimos que $\tau^{Neyman}=$`r neyman` y $var(\tau^{Neyman})=$``r var_ney`.
+```{r}
+kable(select(names_strat,-var_mean_white,-var_mean_black),format="latex",digits = 2,col.names = c("city","sex","industry","mean_w","mean_b","n_w","n_b","tau")) %>% 
+    row_spec(0, angle = -45)
+
+```
+
+```{=latex}
+\newpage
+```
+
+  
+  
+  6. Replica la primera sección de la __Tabla 7__ del paper. En lugar de realizar la estimación con un Probit, \underline{realízala con un Modelo de Probabilidad Lineal (MPL)} utilizando como controles las variables indicadas en la nota de la __Tabla 7__\footnote{En tu estimación utiliza errores heterocedásticos.}. Solo para el renglón de  "Total Number of Requirements" da una interpretación lo más específica posible de la columna "marginal effects." 
+  
+```{r 6}
+names <- names %>% 
+  mutate(totReqs=expreq+compreq+comreq+orgreq+educreq)
+
+vars <- as.matrix(c("req","expreq","compreq","comreq","orgreq","educreq","totReqs"))
+
+
+regs <- apply(vars, c(1),function(x){
+  reg <- feols(data = names, as.formula(paste0("call_back ~ black*",x)),se="hetero")
+  c(round(coef(reg)[4],2),round(se(reg)[4],2))
+  })
+
+
+means_and_sd <- apply(vars,c(1), function(x){
+  m <- mean(pull(select(names,as.name(x))))
+  s <- sd(pull(select(names,as.name(x))))
+  c(round(m,2),round(s,2))
+})
+
+
+```
+  
+```{=latex}
+
+\begin{table}[htbp]
+\caption{Effect of job requirement on racial difference in call- backs}
+\label{tab:my-table}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Job requirement & $\underset{\text{(standard deviation)}}{\text{sample mean}}$ & \begin{tabular}[c]{@{}l@{}}Marginal effect on call-backs\\ for African-American names\end{tabular} \\ \midrule
+\multicolumn{1}{l|}{Any?}                  & \multicolumn{1}{c}{$\underset{(`r means_and_sd[2,1]`)}{`r means_and_sd[1,1]`}$}  & \multicolumn{1}{c}{$\underset{(`r regs[2,1]`)}{`r regs[1,1]`}$}  \\
+\multicolumn{1}{l|}{Experience?}           & \multicolumn{1}{c}{$\underset{(`r means_and_sd[2,2]`)}{`r means_and_sd[1,2]`}$}  & \multicolumn{1}{c}{$\underset{(`r regs[2,2]`)}{`r regs[1,2]`}$}\\
+\multicolumn{1}{l|}{Computer skills?}      & \multicolumn{1}{c}{$\underset{(`r means_and_sd[2,3]`)}{`r means_and_sd[1,3]`}$}  &  \multicolumn{1}{c}{$\underset{(`r regs[2,3]`)}{`r regs[1,3]`}$}\\
+\multicolumn{1}{l|}{Communication skills?} & \multicolumn{1}{c}{$\underset{(`r means_and_sd[2,4]`)}{`r means_and_sd[1,4]`}$}  &  \multicolumn{1}{c}{$\underset{(`r regs[2,4]`)}{`r regs[1,4]`}$}\\
+\multicolumn{1}{l|}{Organization skills?}  & \multicolumn{1}{c}{$\underset{(`r means_and_sd[2,5]`)}{`r means_and_sd[1,5]`}$}  &  \multicolumn{1}{c}{$\underset{(`r regs[2,5]`)}{`r regs[1,5]`}$}\\
+\multicolumn{1}{l|}{Education?}            & \multicolumn{1}{c}{$\underset{(`r means_and_sd[2,6]`)}{`r means_and_sd[1,6]`}$}  &  \multicolumn{1}{c}{$\underset{(`r regs[2,6]`)}{`r regs[1,6]`}$}\\
+\multicolumn{1}{l|}{Total number of skills} & \multicolumn{1}{c}{$\underset{(`r means_and_sd[2,7]`)}{`r means_and_sd[1,7]`}$}  &  \multicolumn{1}{c}{$\underset{(`r regs[2,7]`)}{`r regs[1,7]`}$}\\ \bottomrule
+\end{tabular}
+\end{table}
+
+```
+  
+  Para el renglón de `total number of requirements`, el coeficiente del modelo de probabilidad lineal corrí la especificación $$call\_back_i=\beta_0+\beta_1black_i+\beta_2Tot\_Reqs_i+\beta_3black_i*Tot\_reqs_i$$ y el coeficiente de interés es $\beta_3$. Nos indica C.P. que un aumento de 1 en la cantidad de requerimientos incrementa en 0.01 la probabilidad de que llamen al cv para cvs con nombres de afroamericanos respecto a cvs con nombres de blancos.
+  
+  
+  7. Quisieras saber si la discriminación racial disminuye conforme aumenta la experiencia laboral de los aplicantes. Elige el método y formato que prefieras para reportar tus resultados. Muestra claramente qué parámetro o combinación de parámetros contestan tu pregunta.
+  
+```{r}
+reg_exp <- feols(data=names,call_back ~ black*yearsexp + computerskills)
+```
+
+```{r, results='asis', fig.pos='H'}
+etable(reg_exp,digits = 2,tex=T,fitstat = ~n+r2+f,title = "Mayor experiencia laboral no disminuye la discriminación racial")
+```
+
+El coeficiente de interés en la especificación $$call\_back_i=\beta_0+\beta_1black_i+\beta_2yearsexp_i+\beta_3computerskills_i+\beta_4black_i*yearsexp_i$$ es $\beta_4$ que no es estadísticamente distinto de cero. Si sí lo fuera, podríamos decir que el efecto de un año extra de experiencia laboral tiene un impacto diferenciado y _significativo_ entre afroamericanos y blancos. En realidad si es que hay un impacgto diferenciado, no termina por ser significativo por lo que los años de experiencia laboral no terminan por disminuir ni acrecentar la discriminación laboral contra afroamericanos. Cabe notar que controlo por `computerskills` como en incisos anteriores.
+
+```{=latex}
+
+```
+  8. Por último, imagina que el gobierno esta interesado en replicar este estudio en México para ver posible discriminación en contra de indígenas. Te pide que lo asesores para definir el número de CVs ficticios (aplicaciones) que necesita realizar. Realiza cálculos de poder para indicar:
+```{r 8functions}
+nmin <- function(phi,alpha,tau,sigma,gamma){
+  ((qnorm(phi)+qnorm(1-alpha/2))^2)/((tau^2/sigma^2)*gamma*(1-gamma))
+}
+
+phi <- function(n,alpha,tau,sigma,gamma){
+  1-pnorm(qnorm(1-alpha/2)+(tau/sqrt((sigma^2)/(n*gamma*(1-gamma)))))
+}
+
+```
+
+  - Cuántos CVs ficticios necesitaría aleatorizar si es que: (i) tu anticipas que los efectos (varianza y efecto real) sean iguales a los obtenidos por Bertrand y Mullainathan, (ii) quieres un poder estadístico de $85\%$, (iii) asumes una significancia de $1\%$, y (iv) vas a dividir 50-50 tratamiento y control?
+```{r}
+n <- nmin(0.85,0.01,neyman,sqrt(var(names$call_back)),0.5)
+
+#phi(n,0.01,neyman,sqrt(var(names$call_back)),0.5)
+```
+
+La fórmula utilizada es $$n_{min}={(\Phi^{-1}(\psi)+\Phi^{-1}(1-{\alpha\over2}))^2\over {\tau^2\over\sigma^2}\gamma(1-\gamma)}$$
+donde $\alpha$ es la significancia deseada, $\gamma$ la proporción del grupo de tratamiento, $\tau$ el efecto del tratamiento, $\sigma$ la varianza de la variable objetivo y $\psi$ es el poder estadístico. Al evaluar obtenemos $n_{min}$=`r round(n)`.
+
+  - En R o Stata, produce una gráfica que ilustre el tradeoff entre poder estadístico y proporción de tratamiento y control (similar a lo que hicimos con __Optimal Design__) fijando los valores que obtuviste en el inciso anterior (número de observaciones, efectos reales y significancia).
+```{r}
+power <- lapply(seq(from=0.1,to=0.9,length.out=100),function(x){
+  phi(n,0.01,neyman,sqrt(var(names$call_back)),x)
+} )
+
+ggplot(data.frame(x=seq(from=0.1,to=0.9,length.out=100),y=unlist(power)),aes(y=y,x=x))+
+  geom_line(color="blue")+
+  ylab(TeX(r'($\psi$)'))+
+  xlab(TeX(r'($\gamma$)'))+
+  ggtitle(TeX(r'(La potencia máxima es cuando $\gamma$=.5)'))+
+  theme_minimal()
+```
+     
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+```
+
+
+
+<!-- # Introduction -->
+
+<!-- The Tufte handout style is a style that Edward Tufte uses in his books and handouts. Tufte's style is known for its extensive use of sidenotes, tight integration of graphics with text, and well-set typography. This style has been implemented in LaTeX and HTML/CSS^[See Github repositories [tufte-latex](https://github.com/tufte-latex/tufte-latex) and [tufte-css](https://github.com/edwardtufte/tufte-css)], respectively. We have ported both implementations into the [**tufte** package](https://github.com/rstudio/tufte). If you want LaTeX/PDF output, you may use the `tufte_handout` format for handouts, and `tufte_book` for books. For HTML output, use `tufte_html`. These formats can be either specified in the YAML metadata at the beginning of an R Markdown document (see an example below), or passed to the `rmarkdown::render()` function. See @R-rmarkdown for more information about **rmarkdown**. -->
+
+<!-- ```yaml -->
+<!-- --- -->
+<!-- title: "An Example Using the Tufte Style" -->
+<!-- author: "John Smith" -->
+<!-- output: -->
+<!--   tufte::tufte_handout: default -->
+<!--   tufte::tufte_html: default -->
+<!-- --- -->
+<!-- ``` -->
+
+<!-- There are two goals of this package: -->
+
+<!-- 1. To produce both PDF and HTML output with similar styles from the same R Markdown document; -->
+<!-- 1. To provide simple syntax to write elements of the Tufte style such as side notes and margin figures, e.g. when you want a margin figure, all you need to do is the chunk option `fig.margin = TRUE`, and we will take care of the details for you, so you never need to think about `   ` or `<span class="marginfigure"> </span>`; the LaTeX and HTML code under the hood may be complicated, but you never need to learn or write such code. -->
+
+<!-- If you have any feature requests or find bugs in **tufte**, please do not hesitate to file them to https://github.com/rstudio/tufte/issues. For general questions, you may ask them on StackOverflow: https://stackoverflow.com/tags/rmarkdown. -->
+
+<!-- # Headings -->
+
+<!-- This style provides first and second-level headings (that is, `#` and `##`), demonstrated in the next section. You may get unexpected output if you try to use `###` and smaller headings. -->
+
+<!-- `r newthought('In his later books')`^[[Beautiful Evidence](https://www.edwardtufte.com/tufte/books_be)], Tufte starts each section with a bit of vertical space, a non-indented paragraph, and sets the first few words of the sentence in small caps. To accomplish this using this style, call the `newthought()` function in **tufte** in an _inline R expression_ `` `r ` `` as demonstrated at the beginning of this paragraph.^[Note you should not assume **tufte** has been attached to your R session. You should either `library(tufte)` in your R Markdown document before you call `newthought()`, or use `tufte::newthought()`.] -->
+
+<!-- # Figures -->
+
+<!-- ## Margin Figures -->
+
+<!-- Images and graphics play an integral role in Tufte's work. To place figures in the margin you can use the **knitr** chunk option `fig.margin = TRUE`. For example: -->
+
+<!-- ```{r fig-margin, fig.margin = TRUE, fig.cap = "MPG vs horsepower, colored by transmission.", fig.width=3.5, fig.height=3.5, cache=TRUE, message=FALSE} -->
+<!-- library(ggplot2) -->
+<!-- mtcars2 <- mtcars -->
+<!-- mtcars2$am <- factor( -->
+<!--   mtcars$am, labels = c('automatic', 'manual') -->
+<!-- ) -->
+<!-- ggplot(mtcars2, aes(hp, mpg, color = am)) + -->
+<!--   geom_point() + geom_smooth() + -->
+<!--   theme(legend.position = 'bottom') -->
+<!-- ``` -->
+
+<!-- Note the use of the `fig.cap` chunk option to provide a figure caption. You can adjust the proportions of figures using the `fig.width` and `fig.height` chunk options. These are specified in inches, and will be automatically scaled down to fit within the handout margin. -->
+
+<!-- ## Arbitrary Margin Content -->
+
+<!-- In fact, you can include anything in the margin using the **knitr** engine named `marginfigure`. Unlike R code chunks ```` ```{r} ````, you write a chunk starting with ```` ```{marginfigure} ```` instead, then put the content in the chunk. See an example on the right about the first fundamental theorem of calculus. -->
+
+<!-- ```{marginfigure} -->
+<!-- We know from _the first fundamental theorem of calculus_ that for $x$ in $[a, b]$: -->
+<!-- $$\frac{d}{dx}\left( \int_{a}^{x} f(u)\,du\right)=f(x).$$ -->
+<!-- ``` -->
+
+<!-- For the sake of portability between LaTeX and HTML, you should keep the margin content as simple as possible (syntax-wise) in the `marginefigure` blocks. You may use simple Markdown syntax like `**bold**` and `_italic_` text, but please refrain from using footnotes, citations, or block-level elements (e.g. blockquotes and lists) there. -->
+
+<!-- Note: if you set `echo = FALSE` in your global chunk options, you will have to add `echo = TRUE` to the chunk to display a margin figure, for example ```` ```{marginfigure, echo = TRUE} ````. -->
+
+<!-- ## Full Width Figures -->
+
+<!-- You can arrange for figures to span across the entire page by using the chunk option `fig.fullwidth = TRUE`. -->
+
+<!-- ```{r fig-fullwidth, fig.width = 10, fig.height = 2, fig.fullwidth = TRUE, fig.cap = "A full width figure.", warning=FALSE, message=FALSE, cache=TRUE} -->
+<!-- ggplot(diamonds, aes(carat, price)) + geom_smooth() + -->
+<!--   facet_grid(~ cut) -->
+<!-- ``` -->
+
+<!-- Other chunk options related to figures can still be used, such as `fig.width`, `fig.cap`, `out.width`, and so on. For full width figures, usually `fig.width` is large and `fig.height` is small. In the above example, the plot size is $10 \times 2$. -->
+
+<!-- ## Arbitrary Full Width Content -->
+
+<!-- Any content can span to the full width of the page. This feature requires Pandoc 2.0 or above. All you need is to put your content in a fenced `Div` with the class `fullwidth`, e.g., -->
+
+<!-- ```md -->
+<!-- ::: {.fullwidth} -->
+<!-- Any _full width_ content here. -->
+<!-- ::: -->
+<!-- ``` -->
+
+<!-- Below is an example: -->
+
+<!-- ::: {.fullwidth} -->
+<!-- _R is free software and comes with ABSOLUTELY NO WARRANTY._ You are welcome to redistribute it under the terms of the GNU General Public License versions 2 or 3. For more information about these matters see https://www.gnu.org/licenses/. -->
+<!-- ::: -->
+
+<!-- ## Main Column Figures -->
+
+<!-- Besides margin and full width figures, you can of course also include figures constrained to the main column. This is the default type of figures in the LaTeX/HTML output. -->
+
+<!-- ```{r fig-main, fig.cap = "A figure in the main column.", cache=TRUE} -->
+<!-- ggplot(diamonds, aes(cut, price)) + geom_boxplot() -->
+<!-- ``` -->
+
+<!-- # Sidenotes -->
+
+<!-- One of the most prominent and distinctive features of this style is the extensive use of sidenotes. There is a wide margin to provide ample room for sidenotes and small figures. Any use of a footnote will automatically be converted to a sidenote. ^[This is a sidenote that was entered using a footnote.]  -->
+
+<!-- If you'd like to place ancillary information in the margin without the sidenote mark (the superscript number), you can use the `margin_note()` function from **tufte** in an inline R expression. `r margin_note("This is a margin note.  Notice that there is no number preceding the note.")` This function does not process the text with Pandoc, so Markdown syntax will not work here. If you need to write anything in Markdown syntax, please use the `marginfigure` block described previously. -->
+
+<!-- # References -->
+
+<!-- References can be displayed as margin notes for HTML output. For example, we can cite R here [@R-base]. To enable this feature, you must set `link-citations: yes` in the YAML metadata, and the version of `pandoc-citeproc` should be at least 0.7.2. You can always install your own version of Pandoc from https://pandoc.org/installing.html if the version is not sufficient. To check the version of `pandoc-citeproc` in your system, you may run this in R: -->
+
+<!-- ```{r eval=FALSE} -->
+<!-- system2('pandoc-citeproc', '--version') -->
+<!-- ``` -->
+
+<!-- If your version of `pandoc-citeproc` is too low, or you did not set `link-citations: yes` in YAML, references in the HTML output will be placed at the end of the output document. -->
+
+<!-- # Tables -->
+
+<!-- You can use the `kable()` function from the **knitr** package to format tables that integrate well with the rest of the Tufte handout style. The table captions are placed in the margin like figures in the HTML output. -->
+
+<!-- ```{r} -->
+<!-- knitr::kable( -->
+<!--   mtcars[1:6, 1:6], caption = 'A subset of mtcars.' -->
+<!-- ) -->
+<!-- ``` -->
+
+<!-- # Block Quotes -->
+
+<!-- We know from the Markdown syntax that paragraphs that start with `>` are converted to block quotes. If you want to add a right-aligned footer for the quote, you may use the function `quote_footer()` from **tufte** in an inline R expression. Here is an example: -->
+
+<!-- > "If it weren't for my lawyer, I'd still be in prison. It went a lot faster with two people digging." -->
+<!-- > -->
+<!-- > `r tufte::quote_footer('--- Joe Martin')` -->
+
+<!-- Without using `quote_footer()`, it looks like this (the second line is just a normal paragraph): -->
+
+<!-- > "Great people talk about ideas, average people talk about things, and small people talk about wine." -->
+<!-- > -->
+<!-- > --- Fran Lebowitz -->
+
+<!-- # Responsiveness -->
+
+<!-- The HTML page is responsive in the sense that when the page width is smaller than 760px, sidenotes and margin notes will be hidden by default. For sidenotes, you can click their numbers (the superscripts) to toggle their visibility. For margin notes, you may click the circled plus signs to toggle visibility. -->
+
+<!-- # More Examples -->
+
+<!-- The rest of this document consists of a few test cases to make sure everything still works well in slightly more complicated scenarios. First we generate two plots in one figure environment with the chunk option `fig.show = 'hold'`: -->
+
+<!-- ```{r fig-two-together, fig.cap="Two plots in one figure environment.", fig.show='hold', cache=TRUE, message=FALSE} -->
+<!-- p <- ggplot(mtcars2, aes(hp, mpg, color = am)) + -->
+<!--   geom_point() -->
+<!-- p -->
+<!-- p + geom_smooth() -->
+<!-- ``` -->
+
+<!-- Then two plots in separate figure environments (the code is identical to the previous code chunk, but the chunk option is the default `fig.show = 'asis'` now): -->
+
+<!-- ```{r fig-two-separate, ref.label='fig-two-together', fig.cap=sprintf("Two plots in separate figure environments (the %s plot).", c("first", "second")), cache=TRUE, message=FALSE} -->
+<!-- ``` -->
+
+<!-- You may have noticed that the two figures have different captions, and that is because we used a character vector of length 2 for the chunk option `fig.cap` (something like `fig.cap = c('first plot', 'second plot')`). -->
+
+<!-- Next we show multiple plots in margin figures. Similarly, two plots in the same figure environment in the margin: -->
+
+<!-- ```{r fig-margin-together, fig.margin=TRUE, fig.show='hold', fig.cap="Two plots in one figure environment in the margin.", fig.width=3.5, fig.height=2.5, cache=TRUE} -->
+<!-- p -->
+<!-- p + geom_smooth(method = 'lm') -->
+<!-- ``` -->
+
+<!-- Then two plots from the same code chunk placed in different figure environments: -->
+
+<!-- ```{r fig-margin-separate, fig.margin=TRUE, fig.cap=sprintf("Two plots in separate figure environments in the margin (the %s plot).", c("first", "second")), fig.width=3.5, fig.height=2.5, cache=TRUE} -->
+<!-- knitr::kable(head(iris, 15)) -->
+<!-- p -->
+<!-- knitr::kable(head(iris, 12)) -->
+<!-- p + geom_smooth(method = 'lm') -->
+<!-- knitr::kable(head(iris, 5)) -->
+<!-- ``` -->
+
+<!-- We blended some tables in the above code chunk only as _placeholders_ to make sure there is enough vertical space among the margin figures, otherwise they will be stacked tightly together. For a practical document, you should not insert too many margin figures consecutively and make the margin crowded.  -->
+
+<!-- You do not have to assign captions to figures. We show three figures with no captions below in the margin, in the main column, and in full width, respectively. -->
+
+<!-- ```{r fig-nocap-margin, fig.margin=TRUE, fig.width=3.5, fig.height=2, cache=TRUE} -->
+<!-- # a boxplot of weight vs transmission; this figure -->
+<!-- # will be placed in the margin -->
+<!-- ggplot(mtcars2, aes(am, wt)) + geom_boxplot() + -->
+<!--   coord_flip() -->
+<!-- ``` -->
+<!-- ```{r fig-nocap-main, cache=TRUE} -->
+<!-- # a figure in the main column -->
+<!-- p <- ggplot(mtcars, aes(wt, hp)) + geom_point() -->
+<!-- p -->
+<!-- ``` -->
+<!-- ```{r fig-nocap-fullwidth, fig.fullwidth=TRUE, fig.width=10, fig.height=3, cache=TRUE} -->
+<!-- # a fullwidth figure -->
+<!-- p + geom_smooth(method = 'lm') + facet_grid(~ gear) -->
+<!-- ``` -->
+
+<!-- # Some Notes on Tufte CSS -->
+
+<!-- There are a few other things in Tufte CSS that we have not mentioned so far. If you prefer `r sans_serif('sans-serif fonts')`, use the function `sans_serif()` in **tufte**. For epigraphs, you may use a pair of underscores to make the paragraph italic in a block quote, e.g. -->
+
+<!-- > _I can win an argument on any topic, against any opponent. People know this, and steer clear of me at parties. Often, as a sign of their great respect, they don't even invite me._ -->
+<!-- > -->
+<!-- > `r quote_footer('--- Dave Barry')` -->
+
+<!-- We hope you will enjoy the simplicity of R Markdown and this R package, and we sincerely thank the authors of the Tufte-CSS and Tufte-LaTeX projects for developing the beautiful CSS and LaTeX classes. Our **tufte** package would not have been possible without their heavy lifting. -->
+
+<!-- You can turn on/off some features of the Tufte style in HTML output. The default features enabled are: -->
+
+<!-- ```yaml -->
+<!-- output: -->
+<!--   tufte::tufte_html: -->
+<!--     tufte_features: ["fonts", "background", "italics"] -->
+<!-- ``` -->
+
+<!-- If you do not want the page background to be lightyellow, you can remove `background` from `tufte_features`. You can also customize the style of the HTML page via a CSS file. For example, if you do not want the subtitle to be italic, you can define -->
+
+<!-- ```css -->
+<!-- h3.subtitle em { -->
+<!--   font-style: normal; -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- in, say, a CSS file `my_style.css` (under the same directory of your Rmd document), and apply it to your HTML output via the `css` option, e.g., -->
+
+<!-- ```yaml -->
+<!-- output: -->
+<!--   tufte::tufte_html: -->
+<!--     tufte_features: ["fonts", "background"] -->
+<!--     css: "my_style.css" -->
+<!-- ``` -->
+
+<!-- There is also a variant of the Tufte style in HTML/CSS named "[Envisoned CSS](https://github.com/nogginfuel/envisioned-css)". This style can be used by specifying the argument `tufte_variant = 'envisioned'` in `tufte_html()`^[The actual Envisioned CSS was not used in the **tufte** package. We only changed the fonts, background color, and text color based on the default Tufte style.], e.g. -->
+
+<!-- ```yaml -->
+<!-- output: -->
+<!--   tufte::tufte_html: -->
+<!--     tufte_variant: "envisioned" -->
+<!-- ``` -->
+
+<!-- To see the R Markdown source of this example document, you may follow [this link to Github](https://github.com/rstudio/tufte/raw/master/inst/rmarkdown/templates/tufte_html/skeleton/skeleton.Rmd), use the wizard in RStudio IDE (`File -> New File -> R Markdown -> From Template`), or open the Rmd file in the package: -->
+
+<!-- ```{r eval=FALSE} -->
+<!-- file.edit( -->
+<!--   tufte:::template_resources( -->
+<!--     'tufte_html', '..', 'skeleton', 'skeleton.Rmd' -->
+<!--   ) -->
+<!-- ) -->
+<!-- ``` -->
+
+<!-- This document is also available in [Chinese](https://rstudio.github.io/tufte/cn/), and its `envisioned` style can be found [here](https://rstudio.github.io/tufte/envisioned/). -->
+
+<!-- ```{r bib, include=FALSE} -->
+<!-- # create a bib file for the R packages used in this document -->
+<!-- knitr::write_bib(c('base', 'rmarkdown'), file = 'skeleton.bib') -->
+<!-- ``` -->
